@@ -122,8 +122,8 @@ constexpr uint32_t kWmtEventTimeoutMs = 2000;   // per WMT command (Linux waits 
 constexpr uint32_t kOpenTimeoutMs = 10000;
 constexpr uint32_t kOffOpenTimeoutMs = 1000;    // FUNC_CTRL 0: bluetoothd has let go by then, or it is skipped
 constexpr uint32_t kOffLockWaitMs = 5000;       // FUNC_CTRL 0: how long to wait for a worker that is still loading
-constexpr uint32_t kMaxResets = 2;              // subsystem resets (each followed by a full download) per start
-constexpr uint32_t kMaxResetsPerBoot = 2;       // the same, across every MtkBt instance since the kext loaded
+constexpr uint32_t kMaxResets = 3;              // subsystem resets (each followed by a full download) per start
+constexpr uint32_t kMaxResetsPerBoot = 4;       // the same, across every MtkBt instance since the kext loaded
 
 // Shared by all instances for the life of the kext (one boot). If a subsystem reset makes the chip drop off the
 // bus, it re-enumerates, a fresh MtkBt starts and would reset it again: a loop that kept the whole USB controller
@@ -715,6 +715,19 @@ bool MtkBt::setup() {
     setProperty("MtkBtFirmwareBytes", chip6639 ? mtk_bt_fw_7927_len : mtk_bt_fw_len, 32);
     // btmtk_fw_get_filename: MT7927 uses mediatek/mt7927/BT_RAM_CODE_MT6639_2_%x_hdr.bin (fw_ver & 0xff) + 1
     say("chip asks for firmware %s, carrying it", fwName);
+
+    // Dual-OS / warm-start hardening (0.2.5): a chip left running or half-loaded by a previous
+    // session (macOS restart, or the other OS's driver) makes the first download time out at a
+    // random block. One subsystem reset first puts it in a known-clean state; Linux does the same
+    // before btmtk_setup_firmware. Best effort: if the reset fails we still try the download.
+    if (chipSeen) {
+        step("pre-reset");
+        bool pre = subsysReset();
+        setProperty("MtkBtPreReset", pre ? "done" : "failed");
+        say("pre-download subsys reset %s", pre ? "done" : "failed");
+        if (pre)
+            resyncEndpoints();
+    }
 
     // pass 1 is the normal download; passes 2 .. kMaxResets + 1 each follow a subsystem reset
     for (uint32_t pass = 1;; pass++) {
